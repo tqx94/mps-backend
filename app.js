@@ -2,7 +2,9 @@ require('dotenv').config();
 
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
 const multer = require("multer");
+const path = require("path");
 const { createClient } = require("@supabase/supabase-js");
 
 // Import scheduled cleanup (this will start the cron job)
@@ -14,6 +16,9 @@ const { cronJob: studentExpiryCronJob } = require('./automaticExpiryCheck');
 
 // Import authentication middleware
 const { authenticateUser, requireAdmin, requireOwnershipOrAdmin } = require('./middleware/auth');
+
+// Import error handler middleware
+const { errorHandler, sanitizeErrorMessage } = require('./middleware/errorHandler');
 
 // Import rate limiting middleware
 const { 
@@ -30,6 +35,18 @@ startCreditCleanup();
 
 const app = express();
 
+// Security Headers - Apply Helmet middleware for security headers
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"], // Allow inline styles for Swagger UI
+      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"], // Allow inline scripts for Swagger UI
+      imgSrc: ["'self'", "data:", "https:"],
+    },
+  },
+  crossOriginEmbedderPolicy: false, // Disable for Swagger UI compatibility
+}));
 
 // CORS Configuration - Dynamic CORS based on endpoint type
 // Public endpoints: Allow all origins (*)
@@ -87,43 +104,73 @@ app.use((req, res, next) => {
   }
 });
 
-// Apply JSON parsing for non-webhook routes
+// Apply JSON parsing for non-webhook routes with size limits
 app.use((req, res, next) => {
   if (isWebhookRoute(req.path) && req.method === 'POST') {
     return next(); // Skip JSON parsing for webhook routes (raw body already captured)
   }
-  express.json()(req, res, next);
+  express.json({ limit: '10mb' })(req, res, next);
 });
 
-// Apply urlencoded parsing for non-webhook routes
+// Apply urlencoded parsing for non-webhook routes with size limits
 // Webhook routes handle parsing in verification middleware
 app.use((req, res, next) => {
   if (isWebhookRoute(req.path) && req.method === 'POST') {
     return next(); // Skip urlencoded parsing for webhook routes
   }
-  express.urlencoded({ extended: true })(req, res, next);
+  express.urlencoded({ extended: true, limit: '1mb' })(req, res, next);
 });
+
+// Allowed MIME types for file uploads (strict whitelist)
+const ALLOWED_MIME_TYPES = [
+  'image/jpeg',
+  'image/jpg',
+  'image/png'
+];
+
+/**
+ * Sanitize filename to prevent path traversal attacks
+ * @param {string} filename - Original filename
+ * @returns {string} - Sanitized filename
+ */
+function sanitizeFilename(filename) {
+  // Remove path traversal sequences
+  let sanitized = filename.replace(/\.\./g, '');
+  // Remove directory separators
+  sanitized = sanitized.replace(/[\/\\]/g, '');
+  // Remove special characters that could be dangerous
+  sanitized = sanitized.replace(/[^a-zA-Z0-9._-]/g, '');
+  // Limit length
+  sanitized = sanitized.substring(0, 255);
+  return sanitized || 'file';
+}
 
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, 'uploads/')
   },
   filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9)
-    cb(null, file.fieldname + '-' + uniqueSuffix + '.' + file.originalname.split('.').pop())
+    // Sanitize original filename to prevent path traversal
+    const sanitizedOriginal = sanitizeFilename(file.originalname);
+    const ext = path.extname(sanitizedOriginal) || '.jpg';
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    // Use sanitized filename with unique suffix
+    cb(null, `${file.fieldname}-${uniqueSuffix}${ext}`);
   }
 })
 
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 5 * 1024 * 1024
+    fileSize: 5 * 1024 * 1024, // 5MB limit
+    files: 1 // Only allow single file uploads
   },
   fileFilter: function (req, file, cb) {
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true)
+    // Strict MIME type validation using whitelist
+    if (ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+      cb(null, true);
     } else {
-      cb(new Error('Only image files are allowed for student verification'), false)
+      cb(new Error('Only JPEG and PNG image files are allowed for student verification'), false);
     }
   }
 })
@@ -314,7 +361,11 @@ app.post('/api/test-package-usage', adminLimiter, authenticateUser, requireAdmin
 
     res.json({ success: true, result, userPasses });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    const isDevelopment = process.env.NODE_ENV === 'development';
+    res.status(500).json({ 
+      success: false, 
+      error: isDevelopment ? error.message : 'An error occurred during package usage test'
+    });
   }
 });
 
@@ -361,9 +412,10 @@ app.get('/api/test-verification-tracking/:userId', adminLimiter, authenticateUse
     });
   } catch (error) {
     console.error('Test verification tracking error:', error);
+    const isDevelopment = process.env.NODE_ENV === 'development';
     res.status(500).json({
       success: false,
-      error: error.message
+      error: isDevelopment ? error.message : 'An error occurred while fetching verification tracking'
     });
   }
 });
@@ -405,9 +457,10 @@ app.get('/api/verification-history/:userId', userLimiter, authenticateUser, requ
     });
   } catch (error) {
     console.error('Verification history error:', error);
+    const isDevelopment = process.env.NODE_ENV === 'development';
     res.status(500).json({
       success: false,
-      error: error.message
+      error: isDevelopment ? error.message : 'An error occurred while fetching verification history'
     });
   }
 });
@@ -418,7 +471,11 @@ app.post('/api/cleanup-unpaid-bookings', adminLimiter, authenticateUser, require
     res.json({ success: true, message: 'Cleanup completed' });
   } catch (error) {
     console.error('Manual cleanup error:', error);
-    res.status(500).json({ error: 'Cleanup failed', details: error.message });
+    const isDevelopment = process.env.NODE_ENV === 'development';
+    res.status(500).json({ 
+      error: 'Cleanup failed',
+      ...(isDevelopment && { details: error.message })
+    });
   }
 });
 
@@ -474,9 +531,10 @@ app.get("/api/user/:userId", authenticateUser, requireOwnershipOrAdmin('userId')
 
     if (error) {
       console.error('Get user profile error:', error);
+      const isDevelopment = process.env.NODE_ENV === 'development';
       return res.status(500).json({
         error: "Failed to fetch user profile",
-        details: error.message
+        ...(isDevelopment && { details: error.message })
       });
     }
 
@@ -494,9 +552,10 @@ app.get("/api/user/:userId", authenticateUser, requireOwnershipOrAdmin('userId')
 
   } catch (err) {
     console.error('Get user profile error:', err);
+    const isDevelopment = process.env.NODE_ENV === 'development';
     res.status(500).json({
       error: "Internal server error",
-      details: err.message
+      ...(isDevelopment && { details: err.message })
     });
   }
 });
@@ -572,9 +631,10 @@ app.put("/api/user/:userId", authenticateUser, requireOwnershipOrAdmin('userId')
       .single();
 
     if (updateError) {
+      const isDevelopment = process.env.NODE_ENV === 'development';
       return res.status(500).json({
         error: "Failed to update user profile",
-        details: updateError.message
+        ...(isDevelopment && { details: updateError.message })
       });
     }
 
@@ -585,12 +645,16 @@ app.put("/api/user/:userId", authenticateUser, requireOwnershipOrAdmin('userId')
     });
 
   } catch (err) {
+    const isDevelopment = process.env.NODE_ENV === 'development';
     res.status(500).json({
       error: "Internal server error",
-      details: err.message
+      ...(isDevelopment && { details: err.message })
     });
   }
 });
+
+// Global error handler - MUST be last middleware
+app.use(errorHandler);
 
 app.listen(process.env.PORT, () => {
   console.log(`Server running on port ${process.env.PORT}`);
