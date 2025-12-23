@@ -265,12 +265,6 @@ const requestRefund = async (req, res) => {
       return res.status(400).json({ error: 'Cannot refund unconfirmed booking' });
     }
 
-    // Update booking refund status
-    console.log('🔄 Updating booking refund status to REQUESTED...');
-    // DATA-001 Fix: Sanitize logs to mask sensitive IDs
-    const maskedBookingId = bookingid ? `${bookingid.substring(0, 8)}...` : 'N/A';
-    console.log('📊 Booking ID:', maskedBookingId);
-    console.log('📊 Reason:', reason);
     
     const { data: updateData, error: updateBookingError } = await supabase
       .from('Booking')
