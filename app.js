@@ -4,6 +4,7 @@ const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const multer = require("multer");
+const fs = require("fs");
 const path = require("path");
 const { createClient } = require("@supabase/supabase-js");
 
@@ -145,22 +146,32 @@ function sanitizeFilename(filename) {
   return sanitized || 'file';
 }
 
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, 'uploads/')
-  },
-  filename: function (req, file, cb) {
-    // Sanitize original filename to prevent path traversal
-    const sanitizedOriginal = sanitizeFilename(file.originalname);
-    const ext = path.extname(sanitizedOriginal) || '.jpg';
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    // Use sanitized filename with unique suffix
-    cb(null, `${file.fieldname}-${uniqueSuffix}${ext}`);
+/**
+ * Check file magic bytes to verify actual file type (FILE-001 Fix)
+ * @param {Buffer} buffer - File buffer
+ * @returns {string|null} - Detected MIME type or null if invalid
+ */
+function checkMagicBytes(buffer) {
+  if (!buffer || buffer.length < 4) return null;
+  
+  // JPEG: FF D8 FF
+  if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
+    return 'image/jpeg';
   }
-})
+  
+  // PNG: 89 50 4E 47
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
+    return 'image/png';
+  }
+  
+  return null;
+}
+
+// FILE-001 Fix: Use memoryStorage to validate magic bytes before saving to disk
+const memoryStorage = multer.memoryStorage();
 
 const upload = multer({
-  storage: storage,
+  storage: memoryStorage,
   limits: {
     fileSize: 5 * 1024 * 1024, // 5MB limit
     files: 1 // Only allow single file uploads
@@ -174,6 +185,54 @@ const upload = multer({
     }
   }
 })
+
+// Middleware to validate magic bytes and save to disk (FILE-001 Fix)
+const validateAndSaveFile = async (req, res, next) => {
+  if (!req.file) {
+    return next();
+  }
+
+  try {
+    // Validate magic bytes match declared MIME type
+    const detectedType = checkMagicBytes(req.file.buffer);
+    
+    if (!detectedType || !ALLOWED_MIME_TYPES.includes(detectedType)) {
+      return res.status(400).json({
+        error: 'Invalid file type',
+        message: 'File signature does not match declared type. Only JPEG and PNG images are allowed.'
+      });
+    }
+
+    // Ensure uploads directory exists
+    const uploadsDir = 'uploads/';
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+
+    // Generate safe filename
+    const sanitizedOriginal = sanitizeFilename(req.file.originalname);
+    const ext = path.extname(sanitizedOriginal) || (detectedType === 'image/png' ? '.png' : '.jpg');
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const filename = `${req.file.fieldname}-${uniqueSuffix}${ext}`;
+    const filepath = path.join(uploadsDir, filename);
+
+    // Save file to disk
+    fs.writeFileSync(filepath, req.file.buffer);
+
+    // Update req.file to match diskStorage behavior
+    req.file.filename = filename;
+    req.file.path = filepath;
+    req.file.destination = uploadsDir;
+
+    next();
+  } catch (error) {
+    console.error('Error validating and saving file:', error);
+    return res.status(500).json({
+      error: 'File upload failed',
+      message: 'Failed to process uploaded file'
+    });
+  }
+};
 
 // Import routes after environment variables are loaded
 const paymentRoutes = require("./routes/payment");
@@ -425,7 +484,7 @@ app.get('/api/verification-history/:userId', userLimiter, authenticateUser, requ
   try {
     const { sanitizeUUID } = require('./utils/inputSanitizer');
     const { userId } = req.params;
-    
+
     // Sanitize userId to prevent injection
     const sanitizedUserId = sanitizeUUID(userId);
     if (!sanitizedUserId) {
@@ -561,7 +620,7 @@ app.get("/api/user/:userId", authenticateUser, requireOwnershipOrAdmin('userId')
 });
 
 
-app.put("/api/user/:userId", authenticateUser, requireOwnershipOrAdmin('userId'), upload.single('studentVerificationFile'), async (req, res) => {
+app.put("/api/user/:userId", authenticateUser, requireOwnershipOrAdmin('userId'), upload.single('studentVerificationFile'), validateAndSaveFile, async (req, res) => {
   try {
     const { sanitizeUUID } = require('./utils/inputSanitizer');
     const { userId } = req.params;
@@ -602,7 +661,25 @@ app.put("/api/user/:userId", authenticateUser, requireOwnershipOrAdmin('userId')
     if (firstName !== undefined) updateData.firstName = firstName;
     if (lastName !== undefined) updateData.lastName = lastName;
     if (contactNumber !== undefined) updateData.contactNumber = contactNumber;
-    if (memberType !== undefined) updateData.memberType = memberType;
+    
+    // Prevent users from changing their own memberType (LOGIC-001 Fix)
+    if (memberType !== undefined) {
+      // Only admins can change memberType
+      if (req.user.memberType !== 'ADMIN') {
+        return res.status(403).json({
+          error: 'Forbidden',
+          message: 'You cannot change your own member type. Only administrators can change user roles.'
+        });
+      }
+      // Prevent admins from promoting themselves
+      if (req.user.id === sanitizedUserId && memberType === 'ADMIN') {
+        return res.status(403).json({
+          error: 'Forbidden',
+          message: 'You cannot promote yourself to admin'
+        });
+      }
+      updateData.memberType = memberType;
+    }
 
     if (req.file) {
       updateData.studentVerificationImageUrl = `/uploads/${req.file.filename}`;

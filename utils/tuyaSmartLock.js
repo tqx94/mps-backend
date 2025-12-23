@@ -312,7 +312,7 @@ class TuyaSmartLock {
       } else {
         console.log('❌ Door unlock failed:', data?.msg || 'Unknown error');
       }
-      
+
       if (data && data.success) {
         return {
           success: true,

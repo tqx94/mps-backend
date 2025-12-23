@@ -150,7 +150,7 @@ const sendPackageConfirmation = async (userData, packageData) => {
     console.log("📧 Sending email via Gmail SMTP...");
     // Log email user (not sensitive, but avoid logging in production)
     if (process.env.NODE_ENV === 'development') {
-      console.log("📧 From:", process.env.EMAIL_USER);
+    console.log("📧 From:", process.env.EMAIL_USER);
     }
     console.log("📧 To:", userData.email);
     console.log("📧 Attachments:", mailOptions.attachments.length);
@@ -238,7 +238,7 @@ const sendExtensionConfirmation = async (userData, bookingData, extensionInfo) =
     console.log("📧 Sending extension confirmation email via Gmail SMTP...");
     // Log email user (not sensitive, but avoid logging in production)
     if (process.env.NODE_ENV === 'development') {
-      console.log("📧 From:", process.env.EMAIL_USER);
+    console.log("📧 From:", process.env.EMAIL_USER);
     }
     console.log("📧 To:", userData.email);
     console.log("📧 Attachments:", mailOptions.attachments.length);
@@ -297,7 +297,7 @@ const sendRescheduleConfirmation = async (userData, bookingData, rescheduleInfo)
     console.log("📧 Sending reschedule confirmation email via Gmail SMTP...");
     // Log email user (not sensitive, but avoid logging in production)
     if (process.env.NODE_ENV === 'development') {
-      console.log("📧 From:", process.env.EMAIL_USER);
+    console.log("📧 From:", process.env.EMAIL_USER);
     }
     console.log("📧 To:", userData.email);
     console.log("📧 Attachments:", mailOptions.attachments.length);
