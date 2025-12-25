@@ -1165,3 +1165,89 @@ exports.cancelBooking = async (req, res) => {
   }
 };
 
+// Delete unpaid booking immediately when payment is cancelled
+exports.deleteUnpaidBooking = async (req, res) => {
+  try {
+    const { bookingId } = req.body;
+    
+    if (!bookingId) {
+      return res.status(400).json({ error: 'Booking ID is required' });
+    }
+
+    // Fetch existing booking
+    const { data: existingBooking, error: fetchError } = await supabase
+      .from('Booking')
+      .select('id, bookingRef, confirmedPayment, refundstatus, extensionamounts, userId')
+      .eq('id', bookingId)
+      .single();
+
+    if (fetchError || !existingBooking) {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+
+    // Only allow deletion of unpaid bookings
+    if (existingBooking.confirmedPayment === true) {
+      return res.status(400).json({ error: 'Cannot delete confirmed booking' });
+    }
+
+    // Don't delete if booking has refunds (except NONE, REQUESTED, REJECTED)
+    if (existingBooking.refundstatus && 
+        existingBooking.refundstatus !== 'NONE' && 
+        existingBooking.refundstatus !== 'REQUESTED' && 
+        existingBooking.refundstatus !== 'REJECTED') {
+      return res.status(400).json({ error: 'Cannot delete booking with refund status' });
+    }
+
+    // Don't delete if booking has extensions
+    if (existingBooking.extensionamounts && Object.keys(existingBooking.extensionamounts).length > 0) {
+      return res.status(400).json({ error: 'Cannot delete booking with extensions' });
+    }
+
+    // Don't delete reschedule/extension payments - only new bookings
+    if (existingBooking.bookingRef && 
+        (existingBooking.bookingRef.startsWith('RESCHEDULE_') || 
+         existingBooking.bookingRef.startsWith('EXTEND_'))) {
+      return res.status(400).json({ error: 'Cannot delete reschedule or extension booking' });
+    }
+
+    // Check ownership - user can only delete their own bookings
+    if (req.user && req.user.id !== existingBooking.userId) {
+      return res.status(403).json({ error: 'Not authorized to delete this booking' });
+    }
+
+  
+    // Step 1: Delete related creditusage records first (to avoid foreign key constraint)
+    const { error: creditUsageError } = await supabase
+      .from('creditusage')
+      .delete()
+      .eq('bookingid', existingBooking.id);
+
+    if (creditUsageError) {
+      console.error('⚠️  Error deleting creditusage records:', creditUsageError);
+      // Continue with booking deletion even if creditusage deletion fails
+    } else {
+      console.log('✅ Deleted related creditusage records');
+    }
+
+    // Step 2: Delete the booking
+    const { error: deleteError } = await supabase
+      .from('Booking')
+      .delete()
+      .eq('id', existingBooking.id);
+
+    if (deleteError) {
+  
+      return res.status(500).json({ error: 'Failed to delete booking' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Unpaid booking deleted successfully',
+      bookingRef: existingBooking.bookingRef
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete booking' });
+  }
+};
+
