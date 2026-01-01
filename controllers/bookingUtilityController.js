@@ -23,7 +23,7 @@ exports.getBookedSeats = async (req, res) => {
 
     let query = supabase
       .from("Booking")
-      .select("seatNumbers, startAt, endAt, bookingRef, confirmedPayment, createdAt")
+      .select("seatNumbers, startAt, endAt, bookingRef, confirmedPayment, createdAt, tutors, memberType")
       .eq("location", location)
       .in("confirmedPayment", [true, false])
       .lt("startAt", endAtUTC)  
@@ -87,19 +87,27 @@ exports.getBookedSeats = async (req, res) => {
 
     const confirmedBookings = bookings?.filter(b => b.confirmedPayment) || [];
     const pendingBookings = bookings?.filter(b => !b.confirmedPayment) || [];
+    
+    // Check if there's a tutor booking in this timeslot
+    const hasTutorBooking = bookings?.some(b => 
+      (b.tutors > 0 || b.memberType === 'TUTOR') && b.confirmedPayment
+    ) || false;
 
     res.status(200).json({ 
       bookedSeats,
       availableSeats,
       currentBookingSeats,
       conflictingCurrentSeats,
+      hasTutorBooking, // New field to indicate if tutor has booked this slot
       overlappingBookings: bookings?.map(b => ({
         bookingRef: b.bookingRef,
         startAt: b.startAt,
         endAt: b.endAt,
         seats: b.seatNumbers,
         confirmedPayment: b.confirmedPayment,
-        createdAt: b.createdAt
+        createdAt: b.createdAt,
+        tutors: b.tutors || 0,
+        memberType: b.memberType
       })) || [],
       summary: {
         totalOverlapping: bookings?.length || 0,
