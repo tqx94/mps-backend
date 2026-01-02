@@ -1086,6 +1086,18 @@ exports.updateBooking = async (req, res) => {
         changes.push('special requests');
       }
       
+      // Check if seatNumbers changed
+      if (updateData.seatNumbers !== undefined) {
+        const existingSeats = (existingBooking.seatNumbers || []).sort().join(',');
+        const newSeats = (updateData.seatNumbers || []).sort().join(',');
+        
+        if (existingSeats !== newSeats) {
+          changes.push('seats');
+          metadata.originalSeatNumbers = existingBooking.seatNumbers || [];
+          metadata.newSeatNumbers = updateData.seatNumbers || [];
+        }
+      }
+      
       if (updateData.totalAmount !== undefined && parseFloat(existingBooking.totalAmount) !== parseFloat(updateData.totalAmount)) {
         changes.push('total amount');
         metadata.originalAmount = parseFloat(existingBooking.totalAmount);
@@ -1133,6 +1145,9 @@ exports.updateBooking = async (req, res) => {
         } else if (metadata.originalLocation || metadata.newLocation) {
           oldValue = metadata.originalLocation || '';
           newValue = metadata.newLocation || '';
+        } else if (metadata.originalSeatNumbers || metadata.newSeatNumbers) {
+          oldValue = (metadata.originalSeatNumbers || []).join(', ') || '';
+          newValue = (metadata.newSeatNumbers || []).join(', ') || '';
         } else if (metadata.originalAmount !== undefined || metadata.newAmount !== undefined) {
           oldValue = metadata.originalAmount ? `$${metadata.originalAmount.toFixed(2)}` : '';
           newValue = metadata.newAmount ? `$${metadata.newAmount.toFixed(2)}` : '';
